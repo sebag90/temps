@@ -111,6 +111,25 @@ Use `quadlets/temps.env.example` as the template for
 quadlets set it to `temps-postgres`, and `EnvironmentFile=` would override it
 with `localhost` if present.
 
+The quadlets use `EnvironmentFile=../../../temps/temps.env`, which is relative
+to the unit file. This assumes the units are installed in
+`~/.config/containers/systemd/temps/`. If you install them directly in
+`~/.config/containers/systemd/`, change it to `../../temps/temps.env`.
+
+### Published images
+
+`.github/workflows/build-images.yml` builds multi-arch images for
+`linux/amd64` and `linux/arm64` and publishes them to GHCR:
+
+```text
+ghcr.io/<owner>/temps-collector:latest
+ghcr.io/<owner>/temps-web:latest
+```
+
+The collector base image (`astral/uv:python3.14-bookworm-slim`) only provides
+`amd64` and `arm64`, so 32-bit `arm/v7` is not supported without changing the
+collector base image. A 64-bit Raspberry Pi OS is required for the collector.
+
 ## Database Collection (`scripts/collect_db.py`)
 
 `scripts/collect_db.py` discovers all devices and hub children and writes them to PostgreSQL (configured via `DATABASE_URL` or `POSTGRES_HOST` / `POSTGRES_PORT` / `POSTGRES_DB` / `POSTGRES_USER` / `POSTGRES_PASSWORD`, with SQLite fallback when `--db path.db` is given):

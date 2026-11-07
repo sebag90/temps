@@ -1,11 +1,13 @@
 [Unit]
 Description=Temps Apartment Climate Web Dashboard Container
-After=network-online.target temps-postgres.service
-Requires=temps-postgres.service
+After=network-online.target temps-postgres.service temps-network.service
+Requires=temps-postgres.service temps-network.service
 Wants=network-online.target
 
 [Container]
 ContainerName=temps-web
+# Use the published multi-arch image instead if you prefer:
+# Image=ghcr.io/sebag90/temps-web:latest
 Image=localhost/temps-web:latest
 Network=temps.network
 PublishPort=8000:8000
@@ -18,7 +20,9 @@ Environment=POSTGRES_PORT=5432
 Environment=POSTGRES_DB=temps
 Environment=POSTGRES_USER=temps
 Environment=POSTGRES_PASSWORD=temps
-EnvironmentFile=-%h/.config/temps/temps.env
+# Quadlet resolves EnvironmentFile relative to this unit file.
+# This assumes the units are installed in ~/.config/containers/systemd/temps/.
+EnvironmentFile=../../../temps/temps.env
 
 [Service]
 Restart=always

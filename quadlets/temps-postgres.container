@@ -1,7 +1,8 @@
 [Unit]
 Description=Temps PostgreSQL Database Container
-After=network-online.target
+After=network-online.target temps-network.service temps-postgres-volume.service
 Wants=network-online.target
+Requires=temps-network.service temps-postgres-volume.service
 
 [Container]
 ContainerName=temps-postgres
@@ -15,7 +16,9 @@ Volume=temps-postgres.volume:/var/lib/postgresql/data:Z
 Environment=POSTGRES_DB=temps
 Environment=POSTGRES_USER=temps
 Environment=POSTGRES_PASSWORD=temps
-EnvironmentFile=-%h/.config/temps/temps.env
+# Quadlet resolves EnvironmentFile relative to this unit file.
+# This assumes the units are installed in ~/.config/containers/systemd/temps/.
+EnvironmentFile=../../../temps/temps.env
 
 HealthCmd=pg_isready -U temps -d temps
 HealthInterval=10s
