@@ -1,0 +1,28 @@
+[Unit]
+Description=Temps Apartment Climate Web Dashboard Container
+After=network-online.target temps-postgres.service
+Requires=temps-postgres.service
+Wants=network-online.target
+
+[Container]
+ContainerName=temps-web
+Image=localhost/temps-web:latest
+Network=temps.network
+PublishPort=8000:8000
+
+Environment=TEMPS_HOST=0.0.0.0
+Environment=TEMPS_PORT=8000
+# Do not set POSTGRES_HOST in temps.env: EnvironmentFile overrides these values.
+Environment=POSTGRES_HOST=temps-postgres
+Environment=POSTGRES_PORT=5432
+Environment=POSTGRES_DB=temps
+Environment=POSTGRES_USER=temps
+Environment=POSTGRES_PASSWORD=temps
+EnvironmentFile=-%h/.config/temps/temps.env
+
+[Service]
+Restart=always
+TimeoutStartSec=120
+
+[Install]
+WantedBy=default.target multi-user.target

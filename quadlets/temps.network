@@ -1,0 +1,6 @@
+[Unit]
+Description=Podman network for the Temps climate telemetry stack
+
+[Network]
+NetworkName=temps
+Driver=bridge

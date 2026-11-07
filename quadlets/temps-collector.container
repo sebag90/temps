@@ -1,0 +1,30 @@
+[Unit]
+Description=Temps Kasa/Tapo 5-Minute Cron Collector Container
+After=network-online.target temps-postgres.service
+Requires=temps-postgres.service
+Wants=network-online.target
+
+[Container]
+ContainerName=temps-collector
+Image=localhost/temps-collector:latest
+Network=temps.network
+
+# The collector reaches the hub directly, so no host networking is needed.
+# Override KASA_HOSTS in ~/.config/temps/temps.env if the hub IP changes.
+Environment=KASA_HOSTS=192.168.1.3
+Environment=KASA_DISCOVERY_TIMEOUT=10
+
+# Do not set POSTGRES_HOST in temps.env: EnvironmentFile overrides these values.
+Environment=POSTGRES_HOST=temps-postgres
+Environment=POSTGRES_PORT=5432
+Environment=POSTGRES_DB=temps
+Environment=POSTGRES_USER=temps
+Environment=POSTGRES_PASSWORD=temps
+EnvironmentFile=-%h/.config/temps/temps.env
+
+[Service]
+Restart=always
+TimeoutStartSec=180
+
+[Install]
+WantedBy=default.target multi-user.target

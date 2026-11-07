@@ -1,0 +1,20 @@
+[project]
+name = "temps"
+version = "0.1.0"
+description = "Kasa/Tapo apartment climate telemetry collector and web dashboard"
+readme = "README.md"
+authors = [
+    { name = "sebag90", email = "email@giglis.eu" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "psycopg[binary]>=3.3.8",
+    # TPAP support (needed for KH100 hubs on recent firmware), from upstream PR #1592.
+    # Replace with a normal python-kasa release once TPAP support is merged.
+    "python-kasa @ git+https://github.com/ZeliardM/python-kasa.git@844ec73b08f5284626e40aa6f0f73e293502b0b3",
+    "sqlalchemy>=2.1.8",
+]
+
+# This is an application, not an installable library: there is no package to build.
+[tool.uv]
+package = false

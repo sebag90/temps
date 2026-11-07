@@ -1,0 +1,40 @@
+ARG VENV_DIR=/opt/venv
+ARG WORKDIR=/app
+ARG IMG=docker.io/astral/uv:python3.14-bookworm-slim
+
+FROM $IMG as venvbuilder
+ARG WORKDIR
+ARG VENV_DIR
+ENV VIRTUAL_ENV=$VENV_DIR \
+    UV_PROJECT_ENVIRONMENT=$VENV_DIR \
+    VIRTUAL_ENV=$VENV_DIR
+
+RUN apt-get update && apt-get -y install git
+RUN mkdir -p $VENV_DIR
+
+WORKDIR $WORKDIR
+
+COPY pyproject.toml uv.lock ./ 
+
+RUN uv sync --no-editable
+
+FROM $IMG as runner
+
+ARG WORKDIR
+ARG VENV_DIR
+
+COPY --from=venvbuilder $VENV_DIR $VENV_DIR
+
+ENV VIRTUAL_ENV=$VENV_DIR \
+    UV_PROJECT_ENVIRONMENT=$VENV_DIR \
+    VIRTUAL_ENV=$VENV_DIR \
+    PATH=$VENV_DIR/bin:$PATH
+
+WORKDIR $WORKDIR
+
+RUN apt-get update && apt-get -y install cron
+COPY collector/populate_db.py collector/discovery.py collector/crontab ./
+
+RUN crontab crontab  
+
+CMD printenv > /etc/environment && cron -f

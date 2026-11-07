@@ -1,0 +1,30 @@
+[Unit]
+Description=Temps PostgreSQL Database Container
+After=network-online.target
+Wants=network-online.target
+
+[Container]
+ContainerName=temps-postgres
+Image=docker.io/library/postgres:17-alpine
+Network=temps.network
+Volume=temps-postgres.volume:/var/lib/postgresql/data:Z
+
+# Uncomment to access PostgreSQL from the host for debugging:
+#PublishPort=127.0.0.1:5432:5432
+
+Environment=POSTGRES_DB=temps
+Environment=POSTGRES_USER=temps
+Environment=POSTGRES_PASSWORD=temps
+EnvironmentFile=-%h/.config/temps/temps.env
+
+HealthCmd=pg_isready -U temps -d temps
+HealthInterval=10s
+HealthTimeout=5s
+HealthRetries=5
+
+[Service]
+Restart=always
+TimeoutStartSec=120
+
+[Install]
+WantedBy=default.target multi-user.target

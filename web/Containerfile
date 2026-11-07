@@ -1,0 +1,22 @@
+# Container image for the temperature web dashboard (temps-web).
+# Connects to PostgreSQL via DATABASE_URL / POSTGRES_* environment variables.
+FROM docker.io/library/python:3.13-slim
+
+WORKDIR /app
+
+RUN pip install --no-cache-dir "psycopg[binary]>=3.2"
+
+COPY web ./web
+
+ENV TEMPS_HOST=0.0.0.0 \
+    TEMPS_PORT=8000 \
+    POSTGRES_HOST=temps-postgres \
+    POSTGRES_PORT=5432 \
+    POSTGRES_DB=temps \
+    POSTGRES_USER=temps \
+    POSTGRES_PASSWORD=temps \
+    PYTHONUNBUFFERED=1
+
+EXPOSE 8000
+
+CMD ["python", "web/server.py"]
