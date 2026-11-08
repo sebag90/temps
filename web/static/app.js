@@ -19,9 +19,12 @@ const py = (y) => MARGIN + y * SCALE.y;
 const ROOMS = [
   { name: "Bad Groß", points: [[0, 0], [13, 0], [13, 4], [0, 4]], label: [1.1, 1.35] },
   { name: "Küche", points: [[0, 4], [13, 4], [13, 8], [0, 8]], label: [1.1, 5.15] },
-  { name: "Wohnzimmer", points: [[0, 8], [13, 8], [13, 14], [37, 14], [37, 18], [0, 18]], label: [1.1, 9.45] },
+  // The Flur only runs from the Arbeitszimmer (x=18) to the right and opens
+  // into the Wohnzimmer on its left; the strip above the Arbeitszimmer belongs
+  // to the Wohnzimmer, not to the hallway.
+  { name: "Wohnzimmer", points: [[0, 8], [13, 8], [13, 14], [37, 14], [37, 18], [18, 18], [18, 20], [0, 20]], label: [1.1, 9.45] },
   { name: "Schlafzimmer", points: [[37, 14], [53, 14], [53, 18], [37, 18]], label: [38.2, 15.15] },
-  { name: "Flur", points: [[0, 18], [53, 18], [53, 20], [0, 20]], label: [24.5, 19.25] },
+  { name: "Flur", points: [[18, 18], [53, 18], [53, 20], [18, 20]], label: [34.0, 19.25] },
   { name: "Arbeitszimmer", points: [[0, 20], [18, 20], [18, 28], [0, 28]], label: [1.1, 21.35] },
   { name: "Bad Klein", points: [[38, 20], [53, 20], [53, 24], [38, 24]], label: [39.2, 21.25] },
   { name: "Gästezimmer", points: [[18, 20], [38, 20], [38, 24], [53, 24], [53, 28], [18, 28]], label: [19.2, 21.35] },
@@ -99,15 +102,31 @@ function rssiQuality(rssi) {
   return { label: "Schwach", pct: 25, color: "var(--heating)" };
 }
 
+function thermostatIsOff(device) {
+  return device.on === false || device.mode === "off";
+}
+
+/**
+ * A thermostat only heats while the relevant room temperature is below its
+ * target. The room thermometer (sensor A-D) takes precedence over the
+ * thermostat's own built-in measurement for this decision.
+ */
+function isThermostatHeating(device) {
+  if (device.kind !== "thermostat" || thermostatIsOff(device)) return false;
+  const roomTemp = device.roomTemperature;
+  const target = device.target_temperature;
+  if (roomTemp == null || target == null) return device.mode === "heating";
+  return roomTemp < target;
+}
+
 function modeInfo(device) {
-  const off = device.on === false || device.mode === "off";
   if (device.kind === "sensor") {
     return { label: "Aktiv · Klima", cls: "ready", short: "Aktiv" };
   }
-  if (off) {
+  if (thermostatIsOff(device)) {
     return { label: "Ausgeschaltet", cls: "off", short: "Aus" };
   }
-  if (device.mode === "heating") {
+  if (device.heating) {
     return { label: "Heizt aktiv", cls: "heating", short: "Heizt" };
   }
   if (device.target_temperature != null && device.target_temperature <= 6.0) {
@@ -146,7 +165,7 @@ function isLiveView() {
 function getProjectedDevices() {
   if (!state || !state.devices) return [];
   const step = getEffectiveStep();
-  return state.devices.map((d) => {
+  const projected = state.devices.map((d) => {
     const history = d.history || [];
     if (!history.length) return { ...d, prevTemp: null, deltaTemp: null };
     const idx = Math.min(step, history.length - 1);
@@ -170,6 +189,24 @@ function getProjectedDevices() {
       activeStepIndex: idx,
     };
   });
+
+  // Sensors in the same room take precedence over the thermostat's own
+  // measurement when deciding whether the radiator should be heating.
+  const sensorTemps = new Map();
+  for (const d of projected) {
+    if (d.kind === "sensor" && d.temperature != null) {
+      sensorTemps.set(d.room, d.temperature);
+    }
+  }
+
+  for (const d of projected) {
+    const hasRoomSensor = d.kind === "thermostat" && sensorTemps.has(d.room);
+    d.roomTemperature = hasRoomSensor ? sensorTemps.get(d.room) : d.temperature;
+    d.roomTemperatureSource = d.kind === "sensor" || hasRoomSensor ? "sensor" : "thermostat";
+    d.heating = isThermostatHeating(d);
+  }
+
+  return projected;
 }
 
 function computeRoomStats(devices) {
@@ -193,7 +230,7 @@ function computeRoomStats(devices) {
     if (d.temperature != null) entry.temps.push(d.temperature);
     if (d.kind === "sensor" && d.temperature != null) entry.sensorTemp = d.temperature;
     if (d.humidity != null) entry.humidity = d.humidity;
-    if (d.mode === "heating") entry.heating = true;
+    if (d.heating) entry.heating = true;
     if (d.kind === "thermostat" && d.target_temperature != null) {
       if (entry.maxTarget == null || d.target_temperature > entry.maxTarget) {
         entry.maxTarget = d.target_temperature;
@@ -354,10 +391,10 @@ function updateKPIs(devices, roomStats) {
 
   // Heating Status KPI
   const thermostats = devices.filter((d) => d.kind === "thermostat");
-  const heatingCount = thermostats.filter((d) => d.mode === "heating").length;
-  const offCount = thermostats.filter((d) => d.on === false || d.mode === "off").length;
+  const heatingCount = thermostats.filter((d) => d.heating).length;
+  const offCount = thermostats.filter(thermostatIsOff).length;
   const frostCount = thermostats.filter(
-    (d) => d.on !== false && d.mode !== "off" && d.mode !== "heating" && d.target_temperature != null && d.target_temperature <= 6.0
+    (d) => !thermostatIsOff(d) && !d.heating && d.target_temperature != null && d.target_temperature <= 6.0
   ).length;
   const readyCount = thermostats.length - heatingCount - offCount - frostCount;
 
@@ -597,8 +634,8 @@ function renderDevice(device) {
   const cx = px(gx);
   const cy = py(gy);
   const color = tempColor(device.temperature);
-  const heating = device.mode === "heating";
-  const off = device.on === false || device.mode === "off";
+  const heating = device.heating;
+  const off = thermostatIsOff(device);
   const isSensor = device.kind === "sensor";
   const isActive = device.slot === activeSlot;
 
@@ -751,7 +788,11 @@ function renderOverviewInspector(panel, devices, roomStats) {
       .filter((v) => v != null);
     if (stepTemps.length) {
       const avg = stepTemps.reduce((a, b) => a + b, 0) / stepTemps.length;
-      aptHistory.push({ step: s, temperature: Number(avg.toFixed(2)) });
+      aptHistory.push({
+        step: s,
+        temperature: Number(avg.toFixed(2)),
+        collected_at: state.timestamps ? state.timestamps[s] : null,
+      });
     }
   }
 
@@ -821,14 +862,17 @@ function renderOverviewInspector(panel, devices, roomStats) {
   panel.querySelectorAll("[data-jump-slot]").forEach((btn) => {
     btn.addEventListener("click", () => selectSlot(btn.dataset.jumpSlot));
   });
+
+  attachSparklineInteractions(panel);
 }
 
 function renderDetails(device, allDevices) {
   const panel = document.getElementById("details");
   const color = tempColor(device.temperature);
-  const off = device.on === false || device.mode === "off";
+  const off = thermostatIsOff(device);
   const isSensor = device.kind === "sensor";
   const mInfo = modeInfo(device);
+  const roomTemp = device.roomTemperature != null ? device.roomTemperature : device.temperature;
   const rf = rssiQuality(device.rssi);
 
   const sortedSlots = [...allDevices].sort((a, b) => slotSort(a.slot) - slotSort(b.slot));
@@ -866,13 +910,21 @@ function renderDetails(device, allDevices) {
             ? "Thermostat ausgeschaltet"
             : device.target_temperature <= 6
             ? "Frostschutz-Modus aktiv"
-            : `Differenz: ${fmt(device.temperature - device.target_temperature)}°C`
+            : `Differenz: ${fmt(roomTemp - device.target_temperature)}°C${
+                device.roomTemperatureSource === "sensor" ? " · Raum-Sensor" : ""
+              }`
         }</div>
       </div>
     `;
 
   const metrics = [
     ["Betriebsmodus", mInfo.label],
+    ...(isSensor
+      ? []
+      : [[
+          "Raumtemperatur (Regelung)",
+          `${fmt(roomTemp)} °C · ${device.roomTemperatureSource === "sensor" ? "Sensor" : "Thermostat"}`,
+        ]]),
     [
       isSensor ? "Sensortyp" : "Soll-Vorgabe",
       isSensor ? `${device.model || "T310"} Klima` : `${fmt(device.target_temperature)} °C`,
@@ -998,6 +1050,26 @@ function renderDetails(device, allDevices) {
   panel.querySelectorAll("[data-sibling-slot]").forEach((btn) => {
     btn.addEventListener("click", () => selectSlot(btn.dataset.siblingSlot));
   });
+
+  attachSparklineInteractions(panel);
+}
+
+const escapeAttr = (value) =>
+  String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+
+function chartTimeLabel(raw) {
+  if (!raw) return "";
+  const when = new Date(raw);
+  if (Number.isNaN(when.getTime())) return "";
+  const time = when.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
+  const sameDay = when.toDateString() === new Date().toDateString();
+  return sameDay
+    ? time
+    : `${when.toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit" })} ${time}`;
 }
 
 function sparkline(history, key, targetKey, activeStepIdx = null) {
@@ -1037,15 +1109,25 @@ function sparkline(history, key, targetKey, activeStepIdx = null) {
   const y = (v) => pad.top + (1 - (v - min) / span) * (h - pad.top - pad.bottom);
 
   const ptsArray = history
-    .map((point, i) => (point[key] == null ? null : { i, x: x(i), y: y(point[key]), val: point[key] }))
+    .map((point, i) => {
+      if (!point || point[key] == null) return null;
+      return {
+        i,
+        x: Number(x(i).toFixed(1)),
+        y: Number(y(point[key]).toFixed(1)),
+        val: point[key],
+        label: chartTimeLabel(point.collected_at) || `#${i + 1}`,
+      };
+    })
     .filter(Boolean);
 
-  const pts = ptsArray.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" ");
-  const area = `${ptsArray[0].x.toFixed(1)},${h - pad.bottom} ${pts} ${ptsArray[ptsArray.length - 1].x.toFixed(1)},${h - pad.bottom}`;
+  const pts = ptsArray.map((p) => `${p.x},${p.y}`).join(" ");
+  const area = `${ptsArray[0].x},${h - pad.bottom} ${pts} ${ptsArray[ptsArray.length - 1].x},${h - pad.bottom}`;
   const unit = key === "humidity" ? "%" : "°";
   const strokeColor = key === "humidity" ? "#0d9488" : "#0284c7";
   const fillColor = key === "humidity" ? "rgba(13, 148, 136, 0.13)" : "rgba(2, 132, 199, 0.13)";
   const midVal = (min + max) / 2;
+  const seriesData = escapeAttr(JSON.stringify(ptsArray.map(({ x, y, val, label }) => ({ x, y, val, label }))));
 
   const targetLine = target != null
     ? (() => {
@@ -1057,18 +1139,10 @@ function sparkline(history, key, targetKey, activeStepIdx = null) {
       })()
     : "";
 
-  const dots = ptsArray
-    .map((p) => {
-      const isSelected = activeStepIdx != null && p.i === activeStepIdx;
-      return `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="${isSelected ? 4.2 : 2.3}"
-                fill="${isSelected ? "#ffffff" : strokeColor}" stroke="${strokeColor}" stroke-width="${isSelected ? 2.2 : 1}">
-                <title>Messung #${p.i + 1}: ${fmt(p.val, key === "humidity" ? 0 : 1)}${unit}</title>
-              </circle>`;
-    })
-    .join("");
-
   return `
-    <svg class="spark" viewBox="0 0 ${w} ${h}">
+    <svg class="spark" viewBox="0 0 ${w} ${h}"
+         data-unit="${unit}" data-top="${pad.top}" data-bottom="${h - pad.bottom}"
+         data-right="${w - pad.right}" data-points="${seriesData}">
       <line x1="${pad.left}" y1="${pad.top}" x2="${w - pad.right}" y2="${pad.top}" stroke="var(--line)" stroke-width="1" stroke-dasharray="2 3" />
       <line x1="${pad.left}" y1="${y(midVal).toFixed(1)}" x2="${w - pad.right}" y2="${y(midVal).toFixed(1)}" stroke="var(--line)" stroke-width="1" stroke-dasharray="2 3" />
       <line x1="${pad.left}" y1="${h - pad.bottom}" x2="${w - pad.right}" y2="${h - pad.bottom}" stroke="var(--line)" stroke-width="1" />
@@ -1077,13 +1151,106 @@ function sparkline(history, key, targetKey, activeStepIdx = null) {
       <polyline points="${pts}" fill="none" stroke="${strokeColor}" stroke-width="2.2"
                 stroke-linejoin="round" stroke-linecap="round" />
       ${targetLine}
-      ${dots}
 
       <text x="${pad.left - 5}" y="${pad.top + 3}" fill="var(--muted)" font-family="JetBrains Mono, monospace" font-size="9.5" text-anchor="end">${fmt(max, key === "humidity" ? 0 : 1)}${unit}</text>
       <text x="${pad.left - 5}" y="${y(midVal) + 3}" fill="var(--muted)" font-family="JetBrains Mono, monospace" font-size="9.5" text-anchor="end">${fmt(midVal, key === "humidity" ? 0 : 1)}${unit}</text>
       <text x="${pad.left - 5}" y="${h - pad.bottom + 3}" fill="var(--muted)" font-family="JetBrains Mono, monospace" font-size="9.5" text-anchor="end">${fmt(min, key === "humidity" ? 0 : 1)}${unit}</text>
+
+      <rect class="spark-hit" x="${pad.left}" y="${pad.top}"
+            width="${w - pad.left - pad.right}" height="${h - pad.top - pad.bottom}" />
     </svg>
   `;
+}
+
+function attachSparklineInteractions(root = document) {
+  root.querySelectorAll(".spark").forEach((svg) => {
+    if (svg.dataset.sparkReady === "1") return;
+    const hit = svg.querySelector(".spark-hit");
+    if (!hit) return;
+
+    let points = [];
+    try {
+      points = JSON.parse(svg.getAttribute("data-points") || "[]");
+    } catch {
+      return;
+    }
+    if (!points.length) return;
+    svg.dataset.sparkReady = "1";
+
+    const unit = svg.getAttribute("data-unit") || "";
+    const top = Number(svg.getAttribute("data-top")) || 16;
+    const bottom = Number(svg.getAttribute("data-bottom")) || 94;
+    const right = Number(svg.getAttribute("data-right")) || 346;
+    const viewBox = (svg.getAttribute("viewBox") || "0 0 360 112").split(/\s+/).map(Number);
+    const width = viewBox[2] || 360;
+
+    const cursor = el("g", { class: "spark-cursor" });
+    cursor.style.display = "none";
+    const vline = el("line", { class: "spark-cursor-line", y1: top, y2: bottom });
+    const dot = el("circle", { class: "spark-cursor-dot", r: 3.4 });
+    const tipBg = el("rect", { class: "spark-cursor-bg", rx: 4, height: 28 });
+    const tipValue = el("text", { class: "spark-cursor-value" });
+    const tipTime = el("text", { class: "spark-cursor-time" });
+    cursor.append(vline, dot, tipBg, tipValue, tipTime);
+    svg.appendChild(cursor);
+
+    const nearestPoint = (pointerX) => {
+      let lo = 0;
+      let hi = points.length - 1;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (points[mid].x < pointerX) lo = mid + 1;
+        else hi = mid;
+      }
+      const after = points[lo];
+      const before = points[Math.max(0, lo - 1)];
+      return Math.abs(before.x - pointerX) <= Math.abs(after.x - pointerX) ? before : after;
+    };
+
+    const move = (event) => {
+      const ctm = svg.getScreenCTM();
+      if (!ctm) return;
+      const svgPoint = svg.createSVGPoint();
+      svgPoint.x = event.clientX;
+      svgPoint.y = event.clientY;
+      const pointerX = svgPoint.matrixTransform(ctm.inverse()).x;
+
+      if (pointerX < points[0].x - 8 || pointerX > points[points.length - 1].x + 8) {
+        cursor.style.display = "none";
+        return;
+      }
+
+      const p = nearestPoint(pointerX);
+      const valueText = `${fmt(p.val)}${unit}`;
+      tipValue.textContent = valueText;
+      tipTime.textContent = p.label;
+
+      const tipW = Math.max(56, Math.max(valueText.length, p.label.length) * 5.8 + 12);
+      let tipX = p.x + 8;
+      if (tipX + tipW > right + 8) tipX = p.x - 8 - tipW;
+      tipX = Math.max(2, Math.min(width - tipW - 2, tipX));
+      const tipY = Math.max(top, Math.min(bottom - 28, p.y - 14));
+
+      vline.setAttribute("x1", p.x);
+      vline.setAttribute("x2", p.x);
+      dot.setAttribute("cx", p.x);
+      dot.setAttribute("cy", p.y);
+      tipBg.setAttribute("x", tipX.toFixed(1));
+      tipBg.setAttribute("y", tipY.toFixed(1));
+      tipBg.setAttribute("width", tipW.toFixed(1));
+      tipValue.setAttribute("x", (tipX + 6).toFixed(1));
+      tipValue.setAttribute("y", (tipY + 11).toFixed(1));
+      tipTime.setAttribute("x", (tipX + 6).toFixed(1));
+      tipTime.setAttribute("y", (tipY + 22).toFixed(1));
+      cursor.style.display = "";
+    };
+
+    hit.addEventListener("pointermove", move);
+    hit.addEventListener("pointerdown", move);
+    hit.addEventListener("pointerleave", () => {
+      cursor.style.display = "none";
+    });
+  });
 }
 
 /* ------------------------------------------------------------------ *

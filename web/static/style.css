@@ -1251,6 +1251,48 @@ h1, h2, h3 {
   overflow: visible;
 }
 
+.spark-hit {
+  fill: transparent;
+  cursor: crosshair;
+  pointer-events: all;
+}
+
+.spark-cursor {
+  pointer-events: none;
+}
+
+.spark-cursor-line {
+  stroke: var(--accent);
+  stroke-width: 1.1;
+  stroke-dasharray: 3 2;
+  opacity: 0.85;
+}
+
+.spark-cursor-dot {
+  fill: var(--surface);
+  stroke: var(--accent);
+  stroke-width: 2;
+}
+
+.spark-cursor-bg {
+  fill: var(--surface-glass);
+  stroke: var(--line-strong);
+  stroke-width: 1;
+}
+
+.spark-cursor-value {
+  fill: var(--text);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 700;
+}
+
+.spark-cursor-time {
+  fill: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+}
+
 /* Sibling devices in the same room */
 .siblings-bar {
   margin-top: 14px;
