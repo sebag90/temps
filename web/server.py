@@ -18,7 +18,7 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote_plus, urlparse
+from urllib.parse import parse_qs, quote_plus, urlparse
 
 try:
     import psycopg
@@ -126,6 +126,15 @@ def mask_dsn(dsn: str) -> str:
     return dsn
 
 
+def parse_datetime(iso_str: str | None) -> datetime | None:
+    if not iso_str:
+        return None
+    try:
+        return datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
 def iter_snapshots(text: str):
     """Yield snapshots (each a list of device readings) from raw file text."""
     text = text.strip()
@@ -146,9 +155,10 @@ def iter_snapshots(text: str):
         yield data
 
 
-def _rows_to_snapshots(rows: list[tuple[Any, ...]]) -> tuple[list[list[dict[str, Any]]], list[str], float | None]:
+def _rows_to_snapshots(rows: list[tuple[Any, ...]], start_dt: datetime | None = None, end_dt: datetime | None = None) -> tuple[list[list[dict[str, Any]]], list[str], float | None]:
     """Group joined (devices, readings) rows by collected_at into snapshots."""
     by_timestamp: dict[str, list[dict[str, Any]]] = {}
+    timestamp_epochs: dict[str, float] = {}
     latest_epoch: float | None = None
 
     for (
@@ -181,6 +191,8 @@ def _rows_to_snapshots(rows: list[tuple[Any, ...]]) -> tuple[list[list[dict[str,
 
         if epoch is not None and (latest_epoch is None or epoch > latest_epoch):
             latest_epoch = epoch
+        if epoch is not None:
+            timestamp_epochs[ts_str] = epoch
 
         norm_mac = normalize_mac(mac)
         slot = MAC_LOOKUP.get(norm_mac) if norm_mac else None
@@ -205,6 +217,9 @@ def _rows_to_snapshots(rows: list[tuple[Any, ...]]) -> tuple[list[list[dict[str,
             location = extra["location"]
         parent_label = extra.get("parent_alias") or extra.get("parent") or parent_device_id
 
+        is_off = (is_on is False) or (mode == "off")
+        eff_target = 0.0 if (kind == "thermostat" and is_off) else (float(target_temp) if target_temp is not None else None)
+
         reading = {
             "kind": kind,
             "name": alias or extra.get("name"),
@@ -216,7 +231,7 @@ def _rows_to_snapshots(rows: list[tuple[Any, ...]]) -> tuple[list[list[dict[str,
             "on": None if is_on is None else bool(is_on),
             "mode": mode,
             "temperature": float(current_temp) if current_temp is not None else None,
-            "target_temperature": float(target_temp) if target_temp is not None else None,
+            "target_temperature": eff_target,
             "humidity": float(humidity) if humidity is not None else None,
             "battery": int(battery) if battery is not None else None,
             "rssi": int(rssi) if rssi is not None else None,
@@ -225,95 +240,121 @@ def _rows_to_snapshots(rows: list[tuple[Any, ...]]) -> tuple[list[list[dict[str,
         by_timestamp.setdefault(ts_str, []).append(reading)
 
     timestamps = list(by_timestamp.keys())
-    if MAX_SNAPSHOTS > 0 and len(timestamps) > MAX_SNAPSHOTS:
-        timestamps = timestamps[-MAX_SNAPSHOTS:]
+    timestamps.sort(key=lambda ts: timestamp_epochs.get(ts, 0))
+
+    if start_dt:
+        start_epoch = start_dt.timestamp()
+        timestamps = [ts for ts in timestamps if timestamp_epochs.get(ts, 0) >= start_epoch]
+    if end_dt:
+        end_epoch = end_dt.timestamp()
+        timestamps = [ts for ts in timestamps if timestamp_epochs.get(ts, 0) <= end_epoch]
+
+    if not start_dt and not end_dt and latest_epoch is not None:
+        cutoff = latest_epoch - 24 * 3600
+        timestamps = [ts for ts in timestamps if timestamp_epochs.get(ts, 0) >= cutoff]
+
+    max_lim = 5000 if (start_dt or end_dt) else MAX_SNAPSHOTS
+    if max_lim > 0 and len(timestamps) > max_lim:
+        timestamps = timestamps[-max_lim:]
     snapshots = [by_timestamp[ts] for ts in timestamps]
     return snapshots, timestamps, latest_epoch
 
 
-def load_from_postgres(dsn: str) -> tuple[list[list[dict[str, Any]]], list[str], float | None]:
+def load_from_postgres(dsn: str, start_dt: datetime | None = None, end_dt: datetime | None = None) -> tuple[list[list[dict[str, Any]]], list[str], float | None, str | None, str | None]:
     if psycopg is None:
         raise RuntimeError("psycopg is not installed")
 
-    query = """
-        SELECT
-            d.device_id,
-            d.alias,
-            d.model,
-            d.mac,
-            d.device_type,
-            d.room_location,
-            d.parent_device_id,
-            r.collected_at,
-            r.is_on,
-            r.mode,
-            r.current_temp,
-            r.target_temp,
-            r.humidity,
-            r.battery,
-            r.rssi,
-            r.data_json
-        FROM readings r
-        JOIN devices d ON d.device_id = r.device_id
-        WHERE r.collected_at IN (
-            SELECT DISTINCT collected_at
-            FROM readings
-            ORDER BY collected_at DESC
-            LIMIT %s
-        )
-        ORDER BY r.collected_at ASC, r.id ASC
-    """
     with psycopg.connect(dsn) as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS devices (
-                    device_id        TEXT PRIMARY KEY,
-                    alias            TEXT,
-                    model            TEXT,
-                    mac              TEXT,
-                    device_type      TEXT,
-                    room_location    TEXT,
-                    parent_device_id TEXT,
-                    first_seen       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                    last_seen        TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                );
-                ALTER TABLE devices ADD COLUMN IF NOT EXISTS room_location TEXT;
-                CREATE TABLE IF NOT EXISTS readings (
-                    id              BIGSERIAL PRIMARY KEY,
-                    device_id       TEXT NOT NULL REFERENCES devices(device_id) ON DELETE CASCADE,
-                    collected_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                    is_on           BOOLEAN,
-                    mode            TEXT,
-                    current_temp    DOUBLE PRECISION,
-                    target_temp     DOUBLE PRECISION,
-                    humidity        DOUBLE PRECISION,
-                    battery         INTEGER,
-                    rssi            INTEGER,
-                    current_power_w DOUBLE PRECISION,
-                    location_lat    DOUBLE PRECISION,
-                    location_lon    DOUBLE PRECISION,
-                    data_json       JSONB
-                );
-                """
-            )
-            conn.commit()
-            cur.execute(query, (MAX_SNAPSHOTS,))
+            cur.execute("SELECT MIN(collected_at), MAX(collected_at) FROM readings;")
+            b_row = cur.fetchone()
+            min_ts_str = b_row[0].isoformat() if b_row and b_row[0] else None
+            max_ts_str = b_row[1].isoformat() if b_row and b_row[1] else None
+
+            where_clauses = []
+            params = []
+            if start_dt:
+                where_clauses.append("collected_at >= %s")
+                params.append(start_dt)
+            if end_dt:
+                where_clauses.append("collected_at <= %s")
+                params.append(end_dt)
+
+            if not where_clauses:
+                time_filter = "collected_at >= (SELECT MAX(collected_at) FROM readings) - INTERVAL '24 hours'"
+            else:
+                time_filter = " AND ".join(where_clauses)
+
+            limit_val = 5000 if (start_dt or end_dt) else MAX_SNAPSHOTS
+
+            query = f"""
+                SELECT
+                    d.device_id,
+                    d.alias,
+                    d.model,
+                    d.mac,
+                    d.device_type,
+                    d.room_location,
+                    d.parent_device_id,
+                    r.collected_at,
+                    r.is_on,
+                    r.mode,
+                    r.current_temp,
+                    r.target_temp,
+                    r.humidity,
+                    r.battery,
+                    r.rssi,
+                    r.data_json
+                FROM readings r
+                JOIN devices d ON d.device_id = r.device_id
+                WHERE r.collected_at IN (
+                    SELECT DISTINCT collected_at
+                    FROM readings
+                    WHERE {time_filter}
+                    ORDER BY collected_at DESC
+                    LIMIT %s
+                )
+                ORDER BY r.collected_at ASC, r.id ASC
+            """
+            cur.execute(query, (*params, limit_val))
             rows = cur.fetchall()
-    return _rows_to_snapshots(rows)
+    snapshots, timestamps, latest_epoch = _rows_to_snapshots(rows, start_dt, end_dt)
+    return snapshots, timestamps, latest_epoch, min_ts_str, max_ts_str
 
 
-def load_from_sqlite(db_path: Path) -> tuple[list[list[dict[str, Any]]], list[str], float | None]:
+def load_from_sqlite(db_path: Path, start_dt: datetime | None = None, end_dt: datetime | None = None) -> tuple[list[list[dict[str, Any]]], list[str], float | None, str | None, str | None]:
     if not db_path.exists():
-        return [], [], None
+        return [], [], None, None, None
     conn = sqlite3.connect(db_path)
     try:
         try:
             conn.execute("ALTER TABLE devices ADD COLUMN room_location TEXT")
         except sqlite3.OperationalError:
             pass
+
+        cur = conn.execute("SELECT MIN(collected_at), MAX(collected_at) FROM readings;")
+        b_row = cur.fetchone()
+        min_ts_str = b_row[0] if b_row and b_row[0] else None
+        max_ts_str = b_row[1] if b_row and b_row[1] else None
+
+        where_clauses = []
+        params = []
+        if start_dt:
+            where_clauses.append("collected_at >= ?")
+            params.append(start_dt.isoformat())
+        if end_dt:
+            where_clauses.append("collected_at <= ?")
+            params.append(end_dt.isoformat())
+
+        if not where_clauses:
+            time_filter = "collected_at >= datetime((SELECT MAX(collected_at) FROM readings), '-24 hours')"
+        else:
+            time_filter = " AND ".join(where_clauses)
+
+        limit_val = 5000 if (start_dt or end_dt) else MAX_SNAPSHOTS
+
         cur = conn.execute(
-            """
+            f"""
             SELECT
                 d.device_id,
                 d.alias,
@@ -336,17 +377,19 @@ def load_from_sqlite(db_path: Path) -> tuple[list[list[dict[str, Any]]], list[st
             WHERE r.collected_at IN (
                 SELECT DISTINCT collected_at
                 FROM readings
+                WHERE {time_filter}
                 ORDER BY collected_at DESC
                 LIMIT ?
             )
             ORDER BY r.collected_at ASC, r.id ASC
             """,
-            (MAX_SNAPSHOTS,),
+            (*params, limit_val),
         )
         rows = cur.fetchall()
     finally:
         conn.close()
-    return _rows_to_snapshots(rows)
+    snapshots, timestamps, latest_epoch = _rows_to_snapshots(rows, start_dt, end_dt)
+    return snapshots, timestamps, latest_epoch, min_ts_str, max_ts_str
 
 
 def load_snapshots() -> list[list[dict]]:
@@ -355,27 +398,36 @@ def load_snapshots() -> list[list[dict]]:
     return snapshots
 
 
-def load_snapshots_with_meta() -> tuple[list[list[dict[str, Any]]], list[str], float | None, str]:
+def load_snapshots_with_meta(start_dt: datetime | None = None, end_dt: datetime | None = None) -> tuple[list[list[dict[str, Any]]], list[str], float | None, str, str | None, str | None]:
     """Load snapshots along with timestamps, updated_at epoch, and source label."""
     dsn = resolve_db_dsn()
     if dsn:
         if dsn.startswith(("postgres://", "postgresql://")):
-            snapshots, timestamps, updated_at = load_from_postgres(dsn)
-            return snapshots, timestamps, updated_at, mask_dsn(dsn)
+            snapshots, timestamps, updated_at, min_ts, max_ts = load_from_postgres(dsn, start_dt, end_dt)
+            return snapshots, timestamps, updated_at, mask_dsn(dsn), min_ts, max_ts
         sq_path = Path(dsn)
-        snapshots, timestamps, updated_at = load_from_sqlite(sq_path)
-        return snapshots, timestamps, updated_at, str(sq_path)
+        snapshots, timestamps, updated_at, min_ts, max_ts = load_from_sqlite(sq_path, start_dt, end_dt)
+        return snapshots, timestamps, updated_at, str(sq_path), min_ts, max_ts
 
     if not DB_JSON_PATH.exists():
-        return [], [], None, str(DB_JSON_PATH)
+        return [], [], None, str(DB_JSON_PATH), None, None
     snapshots = list(iter_snapshots(DB_JSON_PATH.read_text(encoding="utf-8")))
     mtime = DB_JSON_PATH.stat().st_mtime
-    return snapshots, [], mtime, str(DB_JSON_PATH)
+    all_ts = []
+    for snap in snapshots:
+        for r in snap:
+            if isinstance(r, dict) and r.get("collected_at"):
+                all_ts.append(r["collected_at"])
+    min_ts_str = min(all_ts) if all_ts else None
+    max_ts_str = max(all_ts) if all_ts else None
+    return snapshots, [], mtime, str(DB_JSON_PATH), min_ts_str, max_ts_str
 
 
-def build_state() -> dict:
+def build_state(start_iso: str | None = None, end_iso: str | None = None) -> dict:
     """Combine every snapshot into the payload consumed by the frontend."""
-    snapshots, timestamps, updated_at, source_label = load_snapshots_with_meta()
+    start_dt = parse_datetime(start_iso)
+    end_dt = parse_datetime(end_iso)
+    snapshots, timestamps, updated_at, source_label, min_ts, max_ts = load_snapshots_with_meta(start_dt, end_dt)
 
     devices: dict[str, dict] = {}
     for step, snapshot in enumerate(snapshots):
@@ -424,8 +476,16 @@ def build_state() -> dict:
         latest.pop("step", None)
         ordered.append({**entry, **latest})
 
+    start_ts = timestamps[0] if timestamps else min_ts
+    end_ts = timestamps[-1] if timestamps else max_ts
+
     return {
         "source": source_label,
+        "min_timestamp": min_ts,
+        "max_timestamp": max_ts,
+        "earliest_timestamp": min_ts,
+        "start_timestamp": start_ts,
+        "end_timestamp": end_ts,
         "snapshots": len(snapshots),
         "timestamps": timestamps,
         "updated_at": updated_at,
@@ -463,7 +523,11 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/state":
             try:
-                state_payload = build_state()
+                parsed_url = urlparse(self.path)
+                query = parse_qs(parsed_url.query)
+                start = query.get("start", [None])[0]
+                end = query.get("end", [None])[0]
+                state_payload = build_state(start_iso=start, end_iso=end)
                 payload = json.dumps(state_payload, ensure_ascii=False).encode("utf-8")
                 self._send(200, payload, "application/json; charset=utf-8")
             except Exception as exc:  # noqa: BLE001

@@ -37,6 +37,14 @@
       </div>
 
       <div class="topbar-actions">
+        <button type="button" class="action-btn" id="btn-timerange" title="Zeitraum-Analyse öffnen">
+          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" width="16" height="16" aria-hidden="true">
+            <rect x="3" y="4" width="14" height="14" rx="2" />
+            <path d="M3 8h14M8 3v2M12 3v2" />
+          </svg>
+          <span>Zeitraum-Analyse</span>
+        </button>
+
         <div class="meta" id="meta" title="System- und Verbindungsstatus">
           <span class="status-dot" id="status-dot"></span>
           <span id="meta-text">Lade Telemetrie…</span>
@@ -94,20 +102,6 @@
               <h2 class="card-title">Grundriss &amp; Thermografie</h2>
               <p class="card-subtitle" id="plan-subtitle">Interaktive Raumkarte · Klicke auf ein Gerät oder einen Raum</p>
             </div>
-          </div>
-
-          <div class="plan-controls">
-            <div class="segmented" role="group" aria-label="Grundriss-Darstellung">
-              <button type="button" class="seg-btn active" id="toggle-heatmap" title="Thermische Raumfärbung umschalten">
-                Thermik
-              </button>
-              <button type="button" class="seg-btn active" id="toggle-targets" title="Zieltemperaturen und Details im Grundriss einblenden">
-                Details
-              </button>
-            </div>
-            <button type="button" class="ghost-btn" id="btn-overview" title="Auswahl aufheben und Wohnungs-Übersicht anzeigen">
-              Wohnungs-Übersicht
-            </button>
           </div>
         </div>
 
@@ -184,6 +178,78 @@
     </footer>
   </div>
 
-  <script src="/app.js"></script>
+  <!-- Time Range Modal Popup -->
+  <div class="modal-overlay" id="timerange-modal" style="display: none;" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <div class="modal-card" id="modal-card">
+      <div class="modal-header">
+        <h3 id="modal-title">Zeitraum-Analyse &amp; Graphen</h3>
+        <button type="button" class="modal-close" id="modal-close-btn" aria-label="Schließen">×</button>
+      </div>
+
+      <!-- Step 1: Form View -->
+      <div class="modal-body" id="modal-step-form">
+        <p class="modal-desc" id="modal-bounds-info">Frühester Eintrag in der Datenbank: –</p>
+        
+        <div class="modal-presets">
+          <button type="button" class="preset-btn" data-preset="24h">Letzte 24h</button>
+          <button type="button" class="preset-btn" data-preset="48h">Letzte 48h</button>
+          <button type="button" class="preset-btn" data-preset="7d">Letzte 7 Tage</button>
+          <button type="button" class="preset-btn" data-preset="all">Gesamter Zeitraum</button>
+        </div>
+
+        <div class="modal-form-group">
+          <label for="modal-start">Startzeitpunkt:</label>
+          <input type="datetime-local" id="modal-start" class="modal-input" />
+        </div>
+
+        <div class="modal-form-group">
+          <label for="modal-end">Endzeitpunkt:</label>
+          <input type="datetime-local" id="modal-end" class="modal-input" />
+        </div>
+
+        <div class="modal-form-group">
+          <label>Geräte für Graphen auswählen:</label>
+          <div class="device-selector-toolbar">
+            <button type="button" class="preset-btn" id="select-all-devices">Alle auswählen</button>
+            <button type="button" class="preset-btn" id="select-thermostats-devices">Nur Thermostate</button>
+            <button type="button" class="preset-btn" id="select-sensors-devices">Nur Sensoren</button>
+            <button type="button" class="preset-btn" id="deselect-all-devices">Keine</button>
+          </div>
+          <div class="device-checkboxes" id="modal-device-checkboxes">
+            <!-- Populated dynamically -->
+          </div>
+        </div>
+
+        <div class="modal-actions-bar">
+          <button type="button" class="action-btn" id="modal-apply-btn" style="width: 100%; justify-content: center; padding: 10px;">Graph für Zeitraum anzeigen</button>
+        </div>
+      </div>
+
+      <!-- Step 2: Expanded Big Graph View -->
+      <div class="modal-body" id="modal-step-graph" style="display: none;">
+        <div class="modal-graph-topbar">
+          <div class="modal-graph-topbar-left">
+            <button type="button" class="ghost-btn" id="modal-back-btn">← Zeitraum ändern</button>
+            <span class="mono-tag" id="modal-range-badge">Zeitraum</span>
+          </div>
+          <div class="modal-graph-topbar-right">
+            <span class="mono-tag" id="modal-devices-count-badge">13 Geräte</span>
+          </div>
+        </div>
+
+        <div class="modal-filter-pills" id="modal-filter-pills">
+          <button type="button" class="filter-pill active" data-filter="all">Alle Geräte</button>
+          <button type="button" class="filter-pill" data-filter="thermostat">Radiator-Thermostate (1–9)</button>
+          <button type="button" class="filter-pill" data-filter="sensor">Klima-Sensoren (A–D)</button>
+        </div>
+
+        <div id="modal-graphs-container" class="modal-graphs-content">
+          <!-- Big graphs populated dynamically -->
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="/js/main.js"></script>
 </body>
 </html>
